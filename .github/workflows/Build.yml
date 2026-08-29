@@ -264,7 +264,22 @@ jobs:
           else
             echo "⚠️ No KernelSU SUSFS patch found for application"
           fi
-          
+
+          # Known upstream bug in 10_enable_susfs_for_ksu.patch: it converts
+          # security_dump_masked_av_fn/context_struct_compute_av_fn from nullable
+          # function-pointer variables into plain extern functions, but leaves the
+          # old "if (fn)" null-guards in place. An extern function is never null, so
+          # Clang's -Wpointer-bool-conversion flags those checks as dead code, and
+          # -Werror turns that into a hard build failure. Apply Clang's own suggested
+          # fix (prefix with the address-of operator) to silence it without changing
+          # behavior - both are always true either way.
+          SELINUX_HIDE_C="kernel/feature/selinux_hide.c"
+          if [ -f "$SELINUX_HIDE_C" ] && grep -q "if (security_dump_masked_av_fn)" "$SELINUX_HIDE_C"; then
+            sed -i 's/if (security_dump_masked_av_fn)/if (\&security_dump_masked_av_fn)/' "$SELINUX_HIDE_C"
+            sed -i 's/if (context_struct_compute_av_fn)/if (\&context_struct_compute_av_fn)/' "$SELINUX_HIDE_C"
+            echo "✅ Worked around upstream -Wpointer-bool-conversion bug in selinux_hide.c"
+          fi
+
           cd ../common
           SUSFS_PATCH=$(ls 50_add_susfs_in_*.patch 2>/dev/null | head -1)
           if [ -n "$SUSFS_PATCH" ]; then
