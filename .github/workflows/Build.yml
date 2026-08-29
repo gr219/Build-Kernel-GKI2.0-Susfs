@@ -358,9 +358,8 @@ jobs:
           mkdir -p android-tools
           cd android-tools
 
-          # Download magiskboot
-          curl -LO https://github.com/svoboda18/magiskboot/releases/download/1.0-3/magiskboot.zip
-          unzip -o magiskboot.zip
+          # Download magiskboot (Linux ELF binary - the svoboda18 release zip ships Windows .exe builds)
+          curl -LO https://raw.githubusercontent.com/TheWildJames/Android_Kernel_Tutorials/gki-2.0/tools/magiskboot
           chmod +x magiskboot
 
           echo "✅ Tools downloaded successfully"

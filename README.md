@@ -426,17 +426,17 @@ tools/bazel build --config=fast --lto=thin //common:kernel_aarch64_dist
 
 On GKI 2.0 devices the kernels are built into the boot.img. We need to get our stock boot.img and unpack it
 
-Start by downloading magiskboot from [svoboda18/magiskboot](https://github.com/svoboda18/magiskboot/releases) and placing it in a new folder
+Start by downloading magiskboot and placing it in a new folder
+
+> [!NOTE]
+> [svoboda18/magiskboot](https://github.com/svoboda18/magiskboot/releases) ships Windows `.exe` builds in its release zip, not Linux binaries - not usable here since this guide runs on a Linux-based build machine. Use the prebuilt Linux `magiskboot` binary below instead.
 
 ```bash
 # Make new directory and move into it
 mkdir -p ~/android-tools && cd ~/android-tools
 
-# Download magiskboot
-curl -LO https://github.com/svoboda18/magiskboot/releases/download/1.0-3/magiskboot.zip
-
-# Unzip it
-unzip -o magiskboot.zip
+# Download magiskboot (Linux binary)
+curl -LO https://raw.githubusercontent.com/TheWildJames/Android_Kernel_Tutorials/gki-2.0/tools/magiskboot
 
 # Make it executable
 chmod +x magiskboot
