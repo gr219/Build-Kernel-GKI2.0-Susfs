@@ -520,7 +520,7 @@ jobs:
           prerelease: false
 
       - name: Upload Kernel Image to Release
-        if: ${{ success() && steps.create_release.outputs.upload_url }}
+        if: ${{ success() && steps.create_release.outputs.upload_url && github.event.inputs.stock_boot_url != '' }}
         uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
