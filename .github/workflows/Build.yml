@@ -31,8 +31,14 @@ on:
         type: string
         default: 'gki-android15-6.6'
       
+      stock_boot_path:
+        description: 'Stock boot.img committed in this repo (e.g. miro/boot.img.gz). Used in preference to stock_boot_url; may be gzip/xz compressed.'
+        required: false
+        type: string
+        default: 'miro/boot.img.gz'
+
       stock_boot_url:
-        description: 'Stock boot.img URL, or a fastboot ROM package (.tgz/.zip) containing boot.img (optional)'
+        description: 'Stock boot.img URL, or a fastboot ROM package (.tgz/.zip) containing boot.img. Only used when stock_boot_path is empty or missing.'
         required: false
         type: string
         default: 'https://bigota.d.miui.com/OS3.0.302.0.WOMMIXM/miro_global_images_OS3.0.302.0.WOMMIXM_20260730.0000.00_16.0_global_a8c3b17989.tgz'
@@ -306,6 +312,18 @@ jobs:
           echo "SUSFS integration verification:"
           find . -name "*susfs*" -type f | head -10
 
+      - name: Stamp Kernel Source Revision
+        working-directory: android-kernel/common
+        run: |
+          # setlocalversion appends "-dirty" whenever the worktree has uncommitted
+          # changes, and KernelSU/SUSFS integration always leaves some. Committing them
+          # gives the build a stable, traceable revision to stamp.
+          git add -A
+          COMMIT_MSG="Integrate KernelSU/SUSFS for ${{ github.event.inputs.kernel_branch }}"
+          git -c user.name="GKI Kernel Builder" -c user.email="builder@localhost" \
+              commit -q -m "$COMMIT_MSG" || echo "No source changes to commit"
+          echo "Kernel source revision: $(git rev-parse --short HEAD)"
+
       - name: Build Kernel with Legacy build.sh
         if: ${{ steps.validate_branch.outputs.build_system == 'legacy' || steps.validate_branch.outputs.use_bazel == 'false' }}
         working-directory: android-kernel
@@ -314,9 +332,10 @@ jobs:
           LTO=${{ github.event.inputs.lto_mode }} BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh
           
           # Verify build artifacts
-          if [ -f "out/*/dist/Image" ]; then
+          LEGACY_IMAGE=$(ls -1 out/*/dist/Image 2>/dev/null | head -1)
+          if [ -n "$LEGACY_IMAGE" ]; then
             echo "✅ Kernel build completed successfully"
-            ls -la out/*/dist/
+            ls -la "$(dirname "$LEGACY_IMAGE")"
           else
             echo "❌ Kernel build failed"
             exit 1
@@ -327,7 +346,10 @@ jobs:
         working-directory: android-kernel
         run: |
           echo "Building kernel using Bazel method..."
-          tools/bazel build --config=fast --lto=${{ github.event.inputs.lto_mode }} //common:kernel_aarch64_dist
+          # --config=stamp makes kleaf run scripts/setlocalversion instead of stamping the
+          # placeholder "-maybe-dirty" into the kernel release string, so a flashed kernel
+          # can be traced back to the exact source it was built from.
+          tools/bazel build --config=fast --config=stamp --lto=${{ github.event.inputs.lto_mode }} //common:kernel_aarch64_dist
           
           # Verify build artifacts
           if [ -f "bazel-bin/common/kernel_aarch64/Image" ]; then
@@ -336,6 +358,25 @@ jobs:
           else
             echo "❌ Kernel build failed"
             exit 1
+          fi
+
+      - name: Check KMI/ABI Against GKI Baseline
+        if: ${{ steps.validate_branch.outputs.use_bazel == 'true' }}
+        working-directory: android-kernel
+        continue-on-error: true
+        run: |
+          # A GKI kernel must keep the frozen KMI: vendor modules on the device were
+          # built against it and refuse to load if an exported symbol's CRC moved.
+          # Patch sets that touch core structs (SUSFS does) can break this while still
+          # compiling cleanly, producing a kernel that boots nowhere.
+          if tools/bazel query //common:kernel_aarch64_abi_dist >/dev/null 2>&1; then
+            tools/bazel run //common:kernel_aarch64_abi_dist -- --dist_dir=abi-out 2>&1 | tail -50
+            if [ -s abi-out/abi.report.short ]; then
+              echo "::warning::KMI differs from the GKI baseline - vendor modules may fail to load"
+              cat abi-out/abi.report.short
+            fi
+          else
+            echo "No ABI target in this branch; skipping KMI check"
           fi
 
       - name: Package AnyKernel3 Zip
@@ -381,7 +422,7 @@ jobs:
           echo "✅ Tools downloaded successfully"
 
       - name: Free Disk Space for Stock ROM Download
-        if: ${{ github.event.inputs.stock_boot_url != '' }}
+        if: ${{ github.event.inputs.stock_boot_path == '' && github.event.inputs.stock_boot_url != '' }}
         run: |
           echo "Disk space before cleanup:"
           df -h /
@@ -394,65 +435,93 @@ jobs:
           echo "Disk space after cleanup:"
           df -h /
 
-      - name: Download Stock Boot Image
-        if: ${{ github.event.inputs.stock_boot_url != '' }}
+      - name: Provide Stock Boot Image
+        id: stock_boot
+        if: ${{ github.event.inputs.stock_boot_path != '' || github.event.inputs.stock_boot_url != '' }}
         run: |
           mkdir -p android-bootimgs
+
+          # A stock boot.img committed to the repo beats re-downloading a multi-GB
+          # fastboot ROM on every run: it is faster, reproducible, and pins the exact
+          # firmware the resulting boot.img will be flashed onto.
+          SRC="${{ github.event.inputs.stock_boot_path }}"
+          if [ -n "$SRC" ]; then
+            SRC="${{ github.workspace }}/$SRC"
+            if [ -f "$SRC" ]; then
+              echo "Using in-repo stock boot image: $SRC"
+              case "$SRC" in
+                *.gz)  gunzip -c "$SRC" > android-bootimgs/boot.img ;;
+                *.xz)  xz -dc "$SRC"   > android-bootimgs/boot.img ;;
+                *)     cp "$SRC" android-bootimgs/boot.img ;;
+              esac
+            else
+              echo "::warning::stock_boot_path '${{ github.event.inputs.stock_boot_path }}' not found in the repository"
+              if [ -z "${{ github.event.inputs.stock_boot_url }}" ]; then
+                echo "❌ No stock boot image available: '${{ github.event.inputs.stock_boot_path }}' is missing and stock_boot_url is empty" >&2
+                exit 1
+              fi
+              echo "Falling back to stock_boot_url"
+            fi
+          fi
+
           cd android-bootimgs
 
-          URL="${{ github.event.inputs.stock_boot_url }}"
-          echo "Downloading from: $URL"
+          if [ ! -f boot.img ]; then
+            URL="${{ github.event.inputs.stock_boot_url }}"
+            echo "Downloading from: $URL"
 
-          case "$URL" in
-            *.tgz|*.tar.gz)
-              curl -L -o rom_package.tgz "$URL"
+            case "$URL" in
+              *.tgz|*.tar.gz)
+                curl -L -o rom_package.tgz "$URL"
 
-              echo "Locating boot.img inside the fastboot ROM package..."
-              BOOT_ENTRY=$(tar -tzf rom_package.tgz | grep -E '(^|/)boot\.img$' | head -1)
-              if [ -z "$BOOT_ENTRY" ]; then
-                echo "❌ boot.img not found inside the downloaded ROM package" >&2
-                echo "Package contents (first 50 entries):" >&2
-                tar -tzf rom_package.tgz | head -50 >&2
-                exit 1
-              fi
-              echo "Found: $BOOT_ENTRY"
+                echo "Locating boot.img inside the fastboot ROM package..."
+                BOOT_ENTRY=$(tar -tzf rom_package.tgz | grep -E '(^|/)boot\.img$' | head -1)
+                if [ -z "$BOOT_ENTRY" ]; then
+                  echo "❌ boot.img not found inside the downloaded ROM package" >&2
+                  echo "Package contents (first 50 entries):" >&2
+                  tar -tzf rom_package.tgz | head -50 >&2
+                  exit 1
+                fi
+                echo "Found: $BOOT_ENTRY"
 
-              tar -xzf rom_package.tgz "$BOOT_ENTRY"
-              mv "$BOOT_ENTRY" boot.img
-              rm -f rom_package.tgz
-              ;;
-            *.zip)
-              curl -L -o rom_package.zip "$URL"
+                tar -xzf rom_package.tgz "$BOOT_ENTRY"
+                mv "$BOOT_ENTRY" boot.img
+                rm -f rom_package.tgz
+                ;;
+              *.zip)
+                curl -L -o rom_package.zip "$URL"
 
-              echo "Locating boot.img inside the ROM package..."
-              BOOT_ENTRY=$(unzip -Z1 rom_package.zip | grep -E '(^|/)boot\.img$' | head -1)
-              if [ -z "$BOOT_ENTRY" ]; then
-                echo "❌ boot.img not found inside the downloaded ROM package" >&2
-                echo "Package contents (first 50 entries):" >&2
-                unzip -Z1 rom_package.zip | head -50 >&2
-                exit 1
-              fi
-              echo "Found: $BOOT_ENTRY"
+                echo "Locating boot.img inside the ROM package..."
+                BOOT_ENTRY=$(unzip -Z1 rom_package.zip | grep -E '(^|/)boot\.img$' | head -1)
+                if [ -z "$BOOT_ENTRY" ]; then
+                  echo "❌ boot.img not found inside the downloaded ROM package" >&2
+                  echo "Package contents (first 50 entries):" >&2
+                  unzip -Z1 rom_package.zip | head -50 >&2
+                  exit 1
+                fi
+                echo "Found: $BOOT_ENTRY"
 
-              unzip -oj rom_package.zip "$BOOT_ENTRY" -d .
-              mv "$(basename "$BOOT_ENTRY")" boot.img
-              rm -f rom_package.zip
-              ;;
-            *)
-              curl -L -o boot.img "$URL"
-              ;;
-          esac
+                unzip -oj rom_package.zip "$BOOT_ENTRY" -d .
+                mv "$(basename "$BOOT_ENTRY")" boot.img
+                rm -f rom_package.zip
+                ;;
+              *)
+                curl -L -o boot.img "$URL"
+                ;;
+            esac
+          fi
 
           if [ -f "boot.img" ]; then
             echo "✅ Stock boot.img ready"
             ls -la boot.img
+            echo "ready=true" >> $GITHUB_OUTPUT
           else
-            echo "❌ Failed to obtain stock boot.img"
+            echo "❌ Failed to obtain stock boot.img" >&2
             exit 1
           fi
 
       - name: Process Boot Image
-        if: ${{ github.event.inputs.stock_boot_url != '' }}
+        if: ${{ steps.stock_boot.outputs.ready == 'true' }}
         run: |
           cd android-bootimgs
           
@@ -465,18 +534,19 @@ jobs:
           echo "kernel_format=$KERNEL_FMT" >> $GITHUB_ENV
           
           # Copy appropriate kernel based on build system and format
-          if [ -f "../android-kernel/out/*/dist/Image" ]; then
+          LEGACY_IMAGE=$(ls -1 ../android-kernel/out/*/dist/Image 2>/dev/null | head -1)
+          if [ -n "$LEGACY_IMAGE" ]; then
             # Legacy build system
             case "$KERNEL_FMT" in
               "raw")
-                cp ../android-kernel/out/*/dist/Image kernel
+                cp "$LEGACY_IMAGE" kernel
                 ;;
               "lz4")
-                cp ../android-kernel/out/*/dist/Image.lz4 kernel
+                cp "${LEGACY_IMAGE}.lz4" kernel
                 ;;
               "gzip")
-                gzip -n -k -f -9 ../android-kernel/out/*/dist/Image
-                mv ../android-kernel/out/*/dist/Image.gz kernel
+                gzip -n -k -f -9 "$LEGACY_IMAGE"
+                mv "${LEGACY_IMAGE}.gz" kernel
                 ;;
             esac
           elif [ -f "../android-kernel/bazel-bin/common/kernel_aarch64/Image" ]; then
@@ -513,8 +583,9 @@ jobs:
           mkdir -p artifacts
           
           # Copy kernel images
-          if [ -f "android-kernel/out/*/dist/Image" ]; then
-            cp android-kernel/out/*/dist/Image* artifacts/
+          LEGACY_IMAGE=$(ls -1 android-kernel/out/*/dist/Image 2>/dev/null | head -1)
+          if [ -n "$LEGACY_IMAGE" ]; then
+            cp "$(dirname "$LEGACY_IMAGE")"/Image* artifacts/
           elif [ -f "android-kernel/bazel-bin/common/kernel_aarch64/Image" ]; then
             cp android-kernel/bazel-bin/common/kernel_aarch64/Image* artifacts/
           fi
@@ -538,9 +609,10 @@ jobs:
           Kernel Version: ${{ steps.validate_branch.outputs.kernel_version }}
           Build System: ${{ steps.validate_branch.outputs.build_system }}
           LTO Mode: ${{ github.event.inputs.lto_mode }}
-          KernelSU: ${{ github.event.inputs.enable_kernelsu }}
+          KernelSU: ${{ steps.resolve_config.outputs.kernelsu_variant }}
           SUSFS: ${{ github.event.inputs.enable_susfs }}
           SUSFS Branch: ${{ github.event.inputs.susfs_branch }}
+          Kernel Release: $(grep -a -o -m1 'Linux version [^ ]*' artifacts/Image 2>/dev/null | cut -d' ' -f3)
           Build Date: $(date -u)
           Build Commit: ${{ github.sha }}
           EOF
@@ -578,7 +650,7 @@ jobs:
             **Installation:**
 
             Two download options are attached to this release - pick one:
-            - `${{ github.event.inputs.kernel_branch }}-boot.img`: a complete, ready-to-flash boot image (built from the `stock_boot_url` you provided).
+            - `${{ github.event.inputs.kernel_branch }}-boot.img`: a complete, ready-to-flash boot image (built from the stock boot image you provided).
               1. Flash using fastboot: `fastboot flash boot ${{ github.event.inputs.kernel_branch }}-boot.img`
               2. Reboot and enjoy!
             - `${{ github.event.inputs.kernel_branch }}-AnyKernel3.zip`: a kernel-only flashable zip ([osm0sis/anykernel3](https://github.com/osm0sis/anykernel3)) that patches your device's *own* boot image at flash time - no stock boot.img upload needed.
@@ -595,7 +667,7 @@ jobs:
           prerelease: false
 
       - name: Upload Kernel Image to Release
-        if: ${{ success() && steps.create_release.outputs.upload_url && github.event.inputs.stock_boot_url != '' }}
+        if: ${{ success() && steps.create_release.outputs.upload_url && steps.stock_boot.outputs.ready == 'true' }}
         uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
