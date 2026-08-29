@@ -522,6 +522,31 @@ You will now see a newly created file: `new-boot.img`
 > ```
 > The rest of this guide refers to the repacked image as `<kernelName>-boot.img`.
 
+### 10. (Alternative) Package as an AnyKernel3 flashable zip
+
+Instead of repacking a full `boot.img` yourself, you can hand off that work to the device by packaging just the kernel `Image` into an [AnyKernel3](https://github.com/osm0sis/anykernel3) zip. AnyKernel3's own installer script unpacks/patches/repacks the device's **own** boot image at flash time via a custom recovery (e.g. TWRP) or `fastboot boot`/sideload — you don't need a copy of the stock `boot.img` at all.
+
+```bash
+# Grab the AnyKernel3 template
+git clone --depth=1 https://github.com/osm0sis/anykernel3.git ~/anykernel3-work
+cd ~/anykernel3-work
+rm -rf .git
+
+# GKI kernels run on many devices, so disable the device allowlist check
+sed -i 's/do.devicecheck=1/do.devicecheck=0/' anykernel.sh
+
+# Copy in your built kernel Image (adjust path to build.sh or Bazel output as used above)
+cp ~/android-kernel/out/*/dist/Image ./Image   # or bazel-bin/common/kernel_aarch64/Image
+
+# Zip it up
+zip -r9 ~/<kernelName>-AnyKernel3.zip .
+```
+
+Flash `<kernelName>-AnyKernel3.zip` through your custom recovery, or `fastboot boot`/sideload it — no `magiskboot unpack`/`repack` step needed for this path.
+
+> [!NOTE]
+> The CI workflow (`.github/workflows/Build.yml`) already produces and attaches an `AnyKernel3.zip` to every release alongside the repacked `boot.img`, so most users won't need to do this manually — it's here for reference/customization.
+
 # 🎉 Congratulations!  
 You've successfully built a GKI 2.0 Android kernel with KernelSU and optionally SUSFS, and repacked it into your boot.img.  
 

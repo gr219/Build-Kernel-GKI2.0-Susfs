@@ -316,6 +316,37 @@ jobs:
             exit 1
           fi
 
+      - name: Package AnyKernel3 Zip
+        run: |
+          # Kernel-only flashable zip (osm0sis/anykernel3) - lets end users flash via
+          # custom recovery / fastboot boot instead of a prebuilt full boot.img.
+          git clone --depth=1 https://github.com/osm0sis/anykernel3.git anykernel3-work
+          cd anykernel3-work
+          rm -rf .git .github README.md
+
+          # GKI kernels run on many devices, so disable the device allowlist check
+          sed -i 's/do.devicecheck=1/do.devicecheck=0/' anykernel.sh
+
+          if [ -f ../android-kernel/out/*/dist/Image ]; then
+            cp ../android-kernel/out/*/dist/Image ./Image
+          elif [ -f ../android-kernel/bazel-bin/common/kernel_aarch64/Image ]; then
+            cp ../android-kernel/bazel-bin/common/kernel_aarch64/Image ./Image
+          else
+            echo "❌ Kernel Image not found for AnyKernel3 packaging" >&2
+            exit 1
+          fi
+
+          zip -r9 "../${KERNEL_NAME}-AnyKernel3.zip" .
+          cd ..
+
+          if [ -f "${KERNEL_NAME}-AnyKernel3.zip" ]; then
+            echo "✅ AnyKernel3 zip packaged successfully"
+            ls -la "${KERNEL_NAME}-AnyKernel3.zip"
+          else
+            echo "❌ Failed to package AnyKernel3 zip"
+            exit 1
+          fi
+
       - name: Download and Setup Tools
         run: |
           mkdir -p android-tools
@@ -417,7 +448,12 @@ jobs:
           if [ -f "android-bootimgs/${KERNEL_NAME}-boot.img" ]; then
             cp "android-bootimgs/${KERNEL_NAME}-boot.img" artifacts/
           fi
-          
+
+          # Copy AnyKernel3 flashable zip if available
+          if [ -f "${KERNEL_NAME}-AnyKernel3.zip" ]; then
+            cp "${KERNEL_NAME}-AnyKernel3.zip" artifacts/
+          fi
+
           # Create build info
           cat > artifacts/build-info.txt << EOF
           Build Information:
@@ -465,9 +501,14 @@ jobs:
             - SUSFS: ${{ github.event.inputs.enable_susfs == 'true' && '✅ Enabled' || '❌ Disabled' }}
             
             **Installation:**
-            1. Download the appropriate kernel image for your device
-            2. Flash using fastboot: `fastboot flash boot ${{ github.event.inputs.kernel_branch }}-boot.img`
-            3. Reboot and enjoy!
+
+            Two download options are attached to this release - pick one:
+            - `${{ github.event.inputs.kernel_branch }}-boot.img`: a complete, ready-to-flash boot image (built from the `stock_boot_url` you provided).
+              1. Flash using fastboot: `fastboot flash boot ${{ github.event.inputs.kernel_branch }}-boot.img`
+              2. Reboot and enjoy!
+            - `${{ github.event.inputs.kernel_branch }}-AnyKernel3.zip`: a kernel-only flashable zip ([osm0sis/anykernel3](https://github.com/osm0sis/anykernel3)) that patches your device's *own* boot image at flash time - no stock boot.img upload needed.
+              1. Flash the zip via a custom recovery (e.g. TWRP) or `fastboot boot`/sideload.
+              2. Reboot and enjoy!
             
             **Important Notes:**
             - Always backup your original boot.img before flashing
@@ -488,6 +529,17 @@ jobs:
           asset_path: artifacts/${{ github.event.inputs.kernel_branch }}-boot.img
           asset_name: ${{ github.event.inputs.kernel_branch }}-boot.img
           asset_content_type: application/octet-stream
+
+      - name: Upload AnyKernel3 Zip to Release
+        if: ${{ success() && steps.create_release.outputs.upload_url }}
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: artifacts/${{ github.event.inputs.kernel_branch }}-AnyKernel3.zip
+          asset_name: ${{ github.event.inputs.kernel_branch }}-AnyKernel3.zip
+          asset_content_type: application/zip
 
       - name: Build Summary
         if: always()
@@ -510,7 +562,7 @@ jobs:
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "**Next Steps:**" >> $GITHUB_STEP_SUMMARY
             echo "1. Download the artifacts from this build" >> $GITHUB_STEP_SUMMARY
-            echo "2. Flash \`${{ github.event.inputs.kernel_branch }}-boot.img\` to your device using fastboot" >> $GITHUB_STEP_SUMMARY
+            echo "2. Flash \`${{ github.event.inputs.kernel_branch }}-boot.img\` via fastboot, **or** flash \`${{ github.event.inputs.kernel_branch }}-AnyKernel3.zip\` via custom recovery" >> $GITHUB_STEP_SUMMARY
             echo "3. Install KernelSU Manager if KernelSU is enabled" >> $GITHUB_STEP_SUMMARY
             echo "4. Configure SUSFS module if SUSFS is enabled" >> $GITHUB_STEP_SUMMARY
           else
