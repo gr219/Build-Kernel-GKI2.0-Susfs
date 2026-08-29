@@ -10,7 +10,7 @@ on:
         default: 'common-android15-6.6-2026-01'
       
       kernelsu_variant:
-        description: 'KernelSU variant to integrate'
+        description: 'KernelSU variant to integrate (forced to "official" if SUSFS is enabled - see enable_susfs)'
         required: true
         type: choice
         default: 'next'
@@ -20,7 +20,7 @@ on:
           - 'next'
       
       enable_susfs:
-        description: 'Enable SUSFS integration (requires KernelSU)'
+        description: 'Enable SUSFS integration (requires KernelSU; forces kernelsu_variant=official, since the SUSFS KernelSU patch is not compatible with KernelSU-Next)'
         required: true
         type: boolean
         default: true
@@ -111,6 +111,23 @@ jobs:
             exit 1
           fi
 
+      - name: Resolve Effective Configuration
+        id: resolve_config
+        run: |
+          KSU_VARIANT="${{ github.event.inputs.kernelsu_variant }}"
+
+          # susfs4ksu's KernelSU-side patch (10_enable_susfs_for_ksu.patch) is only ever
+          # synced against official KernelSU (tiann/KernelSU). KernelSU-Next's directory
+          # structure diverges enough that the patch rejects at every level, so SUSFS +
+          # KernelSU-Next silently loses its KernelSU-side hook integration. Force official.
+          if [ "${{ github.event.inputs.enable_susfs }}" == "true" ] && [ "$KSU_VARIANT" == "next" ]; then
+            echo "⚠️ SUSFS is enabled and kernelsu_variant=next, but SUSFS's KernelSU patch only supports official KernelSU. Overriding kernelsu_variant to 'official'."
+            KSU_VARIANT="official"
+          fi
+
+          echo "kernelsu_variant=$KSU_VARIANT" >> $GITHUB_OUTPUT
+          echo "Effective KernelSU variant: $KSU_VARIANT"
+
       - name: Download Kernel Source
         run: |
           mkdir -p android-kernel
@@ -136,10 +153,10 @@ jobs:
           fi
 
       - name: Integrate KernelSU
-        if: ${{ github.event.inputs.kernelsu_variant != 'none' }}
+        if: ${{ steps.resolve_config.outputs.kernelsu_variant != 'none' }}
         working-directory: android-kernel
         run: |
-          case "${{ github.event.inputs.kernelsu_variant }}" in
+          case "${{ steps.resolve_config.outputs.kernelsu_variant }}" in
             "official")
               echo "Integrating KernelSU (Official)..."
               curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s
@@ -159,14 +176,14 @@ jobs:
               fi
               ;;
             *)
-              echo "❌ Invalid KernelSU variant: ${{ github.event.inputs.kernelsu_variant }}"
+              echo "❌ Invalid KernelSU variant: ${{ steps.resolve_config.outputs.kernelsu_variant }}"
               exit 1
               ;;
           esac
           
           # Verify integration
           if [ -d "$KERNELSU_DIR" ]; then
-            echo "✅ KernelSU (${{ github.event.inputs.kernelsu_variant }}) integrated successfully"
+            echo "✅ KernelSU (${{ steps.resolve_config.outputs.kernelsu_variant }}) integrated successfully"
             echo "Directory structure:"
             ls -la "$KERNELSU_DIR/"
             
@@ -183,10 +200,10 @@ jobs:
           fi
 
       - name: Integrate SUSFS
-        if: ${{ github.event.inputs.enable_susfs == 'true' && github.event.inputs.kernelsu_variant != 'none' }}
+        if: ${{ github.event.inputs.enable_susfs == 'true' && steps.resolve_config.outputs.kernelsu_variant != 'none' }}
         run: |
           echo "Integrating SUSFS with branch: ${{ github.event.inputs.susfs_branch }}"
-          echo "Target KernelSU variant: ${{ github.event.inputs.kernelsu_variant }}"
+          echo "Target KernelSU variant: ${{ steps.resolve_config.outputs.kernelsu_variant }}"
           
           # Clone SUSFS repository
           git clone https://gitlab.com/simonpunk/susfs4ksu.git -b ${{ github.event.inputs.susfs_branch }}
@@ -486,7 +503,7 @@ jobs:
             - Kernel Version: ${{ steps.validate_branch.outputs.kernel_version }}
             - Build System: ${{ steps.validate_branch.outputs.build_system }}
             - LTO Mode: ${{ github.event.inputs.lto_mode }}
-            - KernelSU Variant: ${{ github.event.inputs.kernelsu_variant }}
+            - KernelSU Variant: ${{ steps.resolve_config.outputs.kernelsu_variant }}
             - SUSFS: ${{ github.event.inputs.enable_susfs == 'true' && '✅ Enabled' || '❌ Disabled' }}
             
             **Installation:**
@@ -542,7 +559,7 @@ jobs:
           echo "| Kernel Version | ${{ steps.validate_branch.outputs.kernel_version }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Build System | ${{ steps.validate_branch.outputs.build_system }} |" >> $GITHUB_STEP_SUMMARY
           echo "| LTO Mode | ${{ github.event.inputs.lto_mode }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| KernelSU Variant | ${{ github.event.inputs.kernelsu_variant }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| KernelSU Variant | ${{ steps.resolve_config.outputs.kernelsu_variant }} |" >> $GITHUB_STEP_SUMMARY
           echo "| SUSFS | ${{ github.event.inputs.enable_susfs == 'true' && '✅ Enabled' || '❌ Disabled' }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           

@@ -358,6 +358,9 @@ SUSFS4KSU: An addon root hiding kernel patches and userspace module for KernelSU
 - Works in conjunction with KernelSU
 - Helps hide root access from banking apps and other security-sensitive applications
 
+> [!WARNING]
+> SUSFS's KernelSU-side patch (`10_enable_susfs_for_ksu.patch`) is only ever maintained against **official KernelSU** ([tiann/KernelSU](https://github.com/tiann/KernelSU)) — susfs4ksu's own commit history shows it's periodically re-synced against that repo specifically. KernelSU-Next shares a similar refactored directory layout (it syncs from upstream too) but diverges enough that the patch rejects at every patch level, so it silently fails to apply. **If you want SUSFS, integrate official KernelSU in step 05, not KernelSU-Next.** (`Build.yml` enforces this automatically: enabling SUSFS forces `kernelsu_variant=official`.)
+
 #### Supported Kernel Versions:
 SUSFS has specific branches for different kernel versions. Choose the correct branch for your kernel:
 
