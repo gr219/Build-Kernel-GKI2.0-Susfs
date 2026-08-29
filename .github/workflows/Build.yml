@@ -322,7 +322,15 @@ jobs:
           COMMIT_MSG="Integrate KernelSU/SUSFS for ${{ github.event.inputs.kernel_branch }}"
           git -c user.name="GKI Kernel Builder" -c user.email="builder@localhost" \
               commit -q -m "$COMMIT_MSG" || echo "No source changes to commit"
-          echo "Kernel source revision: $(git rev-parse --short HEAD)"
+          REV=$(git rev-parse --short=12 HEAD)
+          echo "Kernel source revision: $REV"
+
+          # --config=stamp alone did not take (build 33265696745 still reported
+          # "-maybe-dirty"), so also write .scmversion: scripts/setlocalversion reads it
+          # first and returns its contents verbatim, which works inside the kleaf sandbox
+          # where git metadata is not reachable.
+          echo "-g$REV" > .scmversion
+          echo "Wrote .scmversion: $(cat .scmversion)"
 
       - name: Build Kernel with Legacy build.sh
         if: ${{ steps.validate_branch.outputs.build_system == 'legacy' || steps.validate_branch.outputs.use_bazel == 'false' }}
@@ -355,28 +363,15 @@ jobs:
           if [ -f "bazel-bin/common/kernel_aarch64/Image" ]; then
             echo "✅ Kernel build completed successfully"
             ls -la bazel-bin/common/kernel_aarch64/
+
+            KREL=$(grep -a -o -m1 'Linux version [^ ]*' bazel-bin/common/kernel_aarch64/Image | cut -d' ' -f3)
+            echo "Kernel release: $KREL"
+            case "$KREL" in
+              *dirty*) echo "::warning::Kernel release string is '$KREL' - the build revision was not stamped" ;;
+            esac
           else
             echo "❌ Kernel build failed"
             exit 1
-          fi
-
-      - name: Check KMI/ABI Against GKI Baseline
-        if: ${{ steps.validate_branch.outputs.use_bazel == 'true' }}
-        working-directory: android-kernel
-        continue-on-error: true
-        run: |
-          # A GKI kernel must keep the frozen KMI: vendor modules on the device were
-          # built against it and refuse to load if an exported symbol's CRC moved.
-          # Patch sets that touch core structs (SUSFS does) can break this while still
-          # compiling cleanly, producing a kernel that boots nowhere.
-          if tools/bazel query //common:kernel_aarch64_abi_dist >/dev/null 2>&1; then
-            tools/bazel run //common:kernel_aarch64_abi_dist -- --dist_dir=abi-out 2>&1 | tail -50
-            if [ -s abi-out/abi.report.short ]; then
-              echo "::warning::KMI differs from the GKI baseline - vendor modules may fail to load"
-              cat abi-out/abi.report.short
-            fi
-          else
-            echo "No ABI target in this branch; skipping KMI check"
           fi
 
       - name: Package AnyKernel3 Zip
@@ -716,4 +711,36 @@ jobs:
             echo "### ❌ Build failed!" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "Please check the logs above for detailed error information." >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Check KMI/ABI Against GKI Baseline
+        if: ${{ steps.validate_branch.outputs.use_bazel == 'true' }}
+        working-directory: android-kernel
+        continue-on-error: true
+        run: |
+          # Runs last on purpose: this rebuilds //common:kernel_aarch64 with different
+          # flags (lto=default), which overwrites bazel-bin/common/kernel_aarch64/Image.
+          # Running it earlier silently replaces the artifacts with the ABI build's kernel.
+          #
+          # A GKI kernel must keep the frozen KMI: vendor modules on the device were
+          # built against it and refuse to load if an exported symbol's CRC moved.
+          # Patch sets that touch core structs (SUSFS does) can break this while still
+          # compiling cleanly, producing a kernel that boots nowhere.
+          if tools/bazel query //common:kernel_aarch64_abi_dist >/dev/null 2>&1; then
+            tools/bazel run //common:kernel_aarch64_abi_dist -- --dist_dir=abi-out 2>&1 | tail -30
+
+            echo "ABI output files:"
+            ls -la abi-out/
+
+            REPORT=$(ls -1 abi-out/*report*short* abi-out/*report* 2>/dev/null | head -1)
+            if [ -z "$REPORT" ]; then
+              echo "::warning::ABI dist produced no report file - KMI check is inconclusive"
+            elif [ -s "$REPORT" ]; then
+              echo "::warning::KMI differs from the GKI baseline - vendor modules may fail to load"
+              cat "$REPORT"
+            else
+              echo "✅ No KMI differences against the GKI baseline ($(basename "$REPORT") is empty)"
+            fi
+          else
+            echo "No ABI target in this branch; skipping KMI check"
           fi
