@@ -23,7 +23,7 @@ on:
         description: 'Enable SUSFS integration (requires KernelSU)'
         required: true
         type: boolean
-        default: false
+        default: true
       
       susfs_branch:
         description: 'SUSFS branch (e.g., gki-android15-6.6)'
@@ -208,13 +208,13 @@ jobs:
           fi
           
           # Copy kernel patches
-          KERNEL_PATCH=$(find ../susfs4ksu/kernel_patches/ -name "50_add_susfs_in_kernel-${{ github.event.inputs.susfs_branch }}.patch" | head -1)
+          KERNEL_PATCH=$(find ../susfs4ksu/kernel_patches/ -name "50_add_susfs_in_${{ github.event.inputs.susfs_branch }}.patch" | head -1)
           if [ -n "$KERNEL_PATCH" ]; then
             cp "$KERNEL_PATCH" common/
             echo "✅ Specific SUSFS kernel patch found and copied"
           else
             echo "⚠️ Specific SUSFS kernel patch not found, using generic patch"
-            find ../susfs4ksu/kernel_patches/ -name "50_add_susfs_in_kernel*.patch" | head -1 | xargs -I {} cp {} common/
+            find ../susfs4ksu/kernel_patches/ -name "50_add_susfs_in_*.patch" | head -1 | xargs -I {} cp {} common/
           fi
           
           # Copy filesystem patches with error handling
@@ -249,7 +249,7 @@ jobs:
           fi
           
           cd ../common
-          SUSFS_PATCH=$(ls 50_add_susfs_in_kernel*.patch 2>/dev/null | head -1)
+          SUSFS_PATCH=$(ls 50_add_susfs_in_*.patch 2>/dev/null | head -1)
           if [ -n "$SUSFS_PATCH" ]; then
             if patch -p1 --dry-run < "$SUSFS_PATCH" >/dev/null 2>&1; then
               patch -p1 < "$SUSFS_PATCH"

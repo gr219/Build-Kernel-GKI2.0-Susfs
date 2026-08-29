@@ -382,13 +382,13 @@ SUSFS has specific branches for different kernel versions. Choose the correct br
 # Navigate to your kernel source directory
 cd ~/
 
-# example: gki-android15-6.1
+# example: gki-android15-6.6
 git clone https://gitlab.com/simonpunk/susfs4ksu.git -b <kernel_version>
 
 # Then apply the patches
 cp ~/susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch ~/android-kernel/KernelSU/
 
-cp ~/susfs4ksu/kernel_patches/50_add_susfs_in_kernel-<kernel_version>.patch ~/android-kernel/common/
+cp ~/susfs4ksu/kernel_patches/50_add_susfs_in_<kernel_version>.patch ~/android-kernel/common/
 
 cp ~/susfs4ksu/kernel_patches/fs/* ~/android-kernel/common/fs/
 
@@ -396,7 +396,7 @@ cp ./susfs4ksu/kernel_patches/include/linux/* ~/android-kernel/common/include/li
 
 cd ~/android-kernel/KernelSU && patch -p1 < 10_enable_susfs_for_ksu.patch
 
-cd ~/android-kernel/common && patch -p1 < 50_add_susfs_in_kernel.patch
+cd ~/android-kernel/common && patch -p1 < 50_add_susfs_in_<kernel_version>.patch
 ```
 
 > [!IMPORTANT]
